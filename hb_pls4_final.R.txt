@@ -1,0 +1,152 @@
+huber=function(x,M=1.345){
+  ifelse(abs(x)<M, x^2, 2*M*abs(x)-M^2)
+}
+berhu=function(x,M=1.345){
+  ifelse(abs(x)<M, abs(x), (x^2+M^2)/(2*M))
+}
+huber_grad=function(x,M=1.345){
+  ifelse(abs(x)<M, 2*x, 2*M*sign(x))
+}
+prox_berhu=function(x, gm,M=1.345){
+  p_abs=sign(x)*pmax(abs(x)-gm,0)
+  p_b=sign(p_abs)*pmin(abs(p_abs),M/(M+gm)*(abs(p_abs)+gm))
+  p_b
+}
+objective=function(A,b,gm,x,M){
+  sum(huber(A%*%x -b,M))+gm*sum(berhu(x,M))
+}
+
+
+hb_pls=function(X,Y,gamma,H,MAX_ITER=2000){
+  bta=0.5
+  X=scale(X)
+  Y=scale(Y)
+  p=ncol(X)
+  m=ncol(Y)
+  cf=diag(p)
+  coef_spls_hb=matrix(0,p,m)
+  coef_list=list()
+  U=NULL
+  V=NULL
+  Ke=NULL
+  p=ncol(X)
+  m=ncol(Y)
+  for(h in 1:H){
+    Z=t(X) %*% Y
+    M=IQR(Z)/1.345
+    fit.svd=svd(Z)
+    u=fit.svd$u[,1,drop=FALSE]
+    v=fit.svd$v[,1,drop=FALSE]*fit.svd$d[1]
+    prev.u=u
+    
+    obj=function(Z,u,v,gm,M){
+      res=sum(huber(Z-u%*%t(v),M))+gm*sum(berhu(u))+gm*sum(berhu(v))
+      return(res)
+    }
+    res=numeric(MAX_ITER)
+    for(k in 1:MAX_ITER){
+      if(k %%50==0){
+        print(k)
+      }
+      lambda=0.1
+      gu=-huber_grad(Z-u%*%t(v),M) %*% v
+      while(TRUE){
+        s=prox_berhu(u - lambda*gu, lambda*gamma,M)
+        if (sum(huber(Z-s%*%t(v),M)) <= sum(huber(Z-u%*%t(v),M)) + t(gu)%*%(s - u) + (1/(2*lambda))*sum((s - u)^2))
+        {
+          break
+        }else{
+          lambda = bta*lambda;
+        }
+      }
+      prev.u=u
+      u=s
+      
+      lambda=1
+      gv=-t(u)%*% huber_grad(Z-u%*%t(v),M)
+      gv=t(gv)
+      while(TRUE){
+        s=prox_berhu(v - lambda*gv, lambda*gamma,M)
+        if (sum(huber(Z-u%*%t(s),M)) <= sum(huber(Z-u%*%t(v),M)) + t(gv)%*%(s - v) + (1/(2*lambda))*sum((s - v)^2))
+        {
+          break
+        }else{
+          lambda = bta*lambda;
+        }
+      }
+      v=s
+      res[k]=obj(Z,u,v,gamma,M)
+      if(k>1 &&  abs(res[k]- res[k-1])<0.001){
+        break
+      }
+      
+    }
+    plot(1:k,res[1:k],type="l")
+    s=u
+    s=s[order(abs(s[,1]),decreasing = TRUE),,drop=FALSE]
+    
+    
+    
+    U=cbind(U,u)
+    V=cbind(V,v)
+    
+    kesi=X%*%u/sum(u^2)
+    Ke=cbind(Ke,kesi)
+    c=t(X)%*% kesi/sum(kesi^2)
+    d=t(Y) %*% kesi/sum(kesi^2)
+    
+    X=X-kesi%*%t(c)
+    Y=Y-kesi%*%t(d)
+    
+    btc=u%*%t(d)/sum(u^2)
+    bto=cf %*% btc
+    cf=cf%*%(diag(p)-u%*%t(c)/sum(u^2))
+    
+    coef_spls_hb=coef_spls_hb+btc
+    coef_list[[h]]=btc
+  }
+  list(coef=coef_spls_hb,U=U,V=V,Ke=Ke,coef_list=coef_list)
+}
+
+library(RNOmni)
+
+#setwd("D:\\MTU2015-2018\\File_on_my_Mac\\Zm000")
+#prepare X and Y matrix, each column is a gene, and there are colnames for X Y.
+annot=read.csv("annot.csv",header = TRUE,stringsAsFactors = FALSE)
+rownames(annot)=annot[,1]
+X=read.csv("X.csv",header = TRUE)  # TF file
+Y=read.csv("Y.csv",header = TRUE)  # pathway file
+p=ncol(X)
+m=ncol(Y)
+
+res=hb_pls(X,Y,gamma=50,H=3)  # Adjust gamma and H (hidden components) =2，3 or 4
+
+ans=matrix("",p,m)
+ans.v=matrix(0,p,m)
+colnames(ans)=colnames(Y)
+colnames(ans.v)=colnames(Y)
+for(i in 1:ncol(Y)){
+  ind=order(abs(res$coef[,i]),decreasing = TRUE)
+  ans[,i]=colnames(X)[ind]
+  ans.v[,i]=res$coef[ind,i]
+}
+
+result_final=NULL
+for( j in 1:ncol(ans)){
+  d1=annot[ans[1:20,j],]
+  d1=cbind(ans.v[1:20,j],d1)
+  d2=annot[rep(colnames(ans)[j],20),]
+  d3=cbind(d1,d2)
+  result_final=rbind(result_final,d3)
+}
+result_final=result_final[,-(9:16)]
+write.csv(result_final,file="Zm000_3component.csv",row.names = FALSE) # rename component# =H
+
+all.top20.tf=ans[1:20,]
+t1=unlist(all.top20.tf)
+temp=table(t1)
+t2=sort(temp,decreasing = TRUE)
+t3=as.data.frame(t2)
+t4=merge(t3,annot,by.x = "t1",by.y="Gene.name")
+t4=t4[order(t4[,2],decreasing=TRUE),]
+write.csv(t4,"frequency_Zm000_3component.csv",row.names = FALSE) #  rename component# =H
